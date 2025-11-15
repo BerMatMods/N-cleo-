@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+
+  <head>
+    <meta charset="UTF-8">
+    <title>Three.js Procedural Energy Core</title>
+    
+
+  </head>
+    
+  <body>
+  <div id="container"></div>
+
+<style>
+  #container {
+    width: 100%;
+    height: 100vh;
+  }
+  body {
+    margin: 0;
+    overflow: hidden;
+    background-color: #000;
+  }
+</style>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.161.0/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.161.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+  import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+  import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+  import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+  import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+
+  let scene, camera, renderer, controls, clock, composer;
+  let centralIcosahedron, centralRing, energyRings = [];
+  const orbitingPlanes = [];
+  const planeRings = [];
+  let particles;
+
+  init();
+  animate();
+
+  function init() {
+    scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x000814, 0.003);
+
+    camera = new THREE.PerspectiveCamera(
+      50,
+      window.innerWidth / window.innerHeight,
+      0.1,
+      1000
+    );
+    camera.position.set(4, 10, 22);
+    camera.lookAt(0, 0, 0);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 0.9;
+    document.getElementById('container').appendChild(renderer.domElement);
+
+    controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.1;
+    controls.minDistance = 10;
+    controls.maxDistance = 50;
+
+    clock = new THREE.Clock();
+
+    const icoGeo = new THREE.IcosahedronGeometry(4, 0);
+    const icoMat = new THREE.ShaderMaterial({
+      uniforms: {
+         time: { value: 0 }
+      },
+      vertexShader: `
+         uniform float time;
+         varying vec2 vUv;
+         varying vec3 vNormal;
+         void main(){
+           vUv = uv;
+           vNormal = normal;
+           vec3 pos = position;
+           pos += normal * 0.2 * sin(time + pos.x * 3.0);
+           gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+         }
+      `,
+      fragmentShader: `
+         uniform float time;
+         varying vec2 vUv;
+         varying vec3 vNormal;
+         float fractal(vec2 uv) {
+           float value = 0.0;
+           float amplitude = 0.5;
+           for (int i = 0; i < 4; i++) {
+             value += amplitude * sin(uv.x * 10.0 + time + uv.y * 10.0);
+             uv *= 2.0;
+             amplitude *= 0.5;
+           }
+           return value;
+         }
+         void main(){
+           float f = fractal(vUv);
+           vec3 color1 = vec3(0.2, 0.0, 0.3);
+           vec3 color2 = vec3(1.0, 0.1, 1.0);
+           vec3 color = mix(color1, color2, f * 0.5 + 0.5);
+           float light = dot(normalize(vNormal), vec3(0.0, 0.0, 1.0)) * 0.6 + 0.4;
+           color = color * light * 1.2;
+           gl_FragColor = vec4(color, 1.0);
+         }
+      `,
+      side: THREE.DoubleSide
+    });
+    centralIcosahedron = new THREE.Mesh(icoGeo, icoMat);
+    scene.add(centralIcosahedron);
+    
+    const ringGeo = new THREE.TorusGeometry(5.2, 0.15, 16, 100);
+    const ringMat = new THREE.ShaderMaterial({
+      uniforms: {
+        time: { value: 0 }
+      },
+      vertexShader: `
+        uniform float time;
+        varying vec2 vUv;
+        varying vec3 vPosition;
+        void main() {
+          vUv = uv;
+          vPosition = position;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float time;
+        varying vec2 vUv;
+        varying vec3 vPosition;
+        void main() {
+          float energy = fract(vUv.x * 5.0 - time * 0.5);
+          energy = smoothstep(0.0, 0.1, energy) * smoothstep(1.0, 0.9, energy);
+          float pulse = 0.8 + 0.2 * sin(time * 2.0);
+          vec3 color1 = vec3(1.0, 0.3, 1.0);
+          vec3 color2 = vec3(0.7, 0.0, 1.0);
+          vec3 finalColor = mix(color2, color1, energy) * pulse * 1.5;
+          float glow = 0.4 + 0.6 * energy;
+          gl_FragColor = vec4(finalColor, glow);
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+    
+    centralRing = new THREE.Mesh(ringGeo, ringMat);
+    centralRing.rotation.x = Math.PI / 2;
+    scene.add(centralRing);
+    
+    const ringGeo2 = new THREE.TorusGeometry(5.2, 0.15, 16, 100);
+    const ringMat2 = ringMat.clone();
+    const centralRing2 = new THREE.Mesh(ringGeo2, ringMat2);
+    centralRing2.rotation.x = Math.PI / 2;
+    centralRing2.rotation.y = Math.PI / 2;
+    scene.add(centralRing2);
+
+    const energyRingMat = new THREE.ShaderMaterial({
+      uniforms: {
+        time: { value: 0 },
+        ringIndex: { value: 0 }
+      },
+      vertexShader: `
+        uniform float time;
+        uniform float ringIndex;
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          vec3 pos = position;
+          pos.z += sin(time + ringIndex) * 0.1;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float time;
+        uniform float ringIndex;
+        varying vec2 vUv;
+        void main() {
+          float flow = fract(vUv.x * 4.0 + time * (0.3 + ringIndex * 0.1));
+          float pulse = 0.7 + 0.3 * sin(time * 2.0 + ringIndex * 3.0);
+          float intensity = smoothstep(0.0, 0.2, flow) * smoothstep(0.8, 0.6, flow);
+          vec3 baseColor = vec3(0.2, 0.0, 0.8);
+          vec3 brightColor = vec3(0.8, 0.4, 1.0);
+          vec3 color = mix(baseColor, brightColor, intensity) * pulse;
+          float alpha = (0.3 + 0.7 * intensity) * pulse;
+          gl_FragColor = vec4(color, alpha);
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+
+    for (let i = 0; i < 3; i++) {
+      const energyRingGeo = new THREE.TorusGeometry(4.5 + i * 0.8, 0.1, 16, 64);
+      const energyRing = new THREE.Mesh(energyRingGeo, energyRingMat.clone());
+      energyRing.material.uniforms.ringIndex.value = i;
+      energyRing.position.y = -5 - i * 0.5;
+      energyRing.rotation.x = Math.PI / 2;
+      scene.add(energyRing);
+      energyRings.push({
+        mesh: energyRing,
+        speed: 0.2 + i * 0.05
+      });
+    }
+
+    const orbitalLayers = [
+      { radius: 8.5, planeCount: 3, verticalTilt: 0.1, speedRange: [0.7, 0.9], heightRange: [1.0, 2.0], colorScheme: "blue" },
+      { radius: 11.0, planeCount: 3, verticalTilt: 0.3, speedRange: [0.5, 0.7], heightRange: [0.5, 1.5], colorScheme: "cyan" },
+      { radius: 13.5, planeCount: 2, verticalTilt: -0.2, speedRange: [0.4, 0.6], heightRange: [0.5, 2.0], colorScheme: "teal" }
+    ];
+    
+    let planeIndex = 0;
+    orbitalLayers.forEach(layer => {
+      for (let i = 0; i < layer.planeCount; i++) {
+        const planeGeo = new THREE.PlaneGeometry(3, 3, 32, 32);
+        const planeMat = new THREE.ShaderMaterial({
+          uniforms: {
+             time: { value: 0 },
+             index: { value: planeIndex },
+             colorScheme: { value: layer.colorScheme === "blue" ? 0 : 
+                             layer.colorScheme === "cyan" ? 1 : 2 }
+          },
+          vertexShader: `
+             uniform float time;
+             uniform float index;
+             varying vec2 vUv;
+             varying float vIndex;
+             void main(){
+                vUv = uv;
+                vIndex = index;
+                vec3 pos = position;
+                float wave1 = sin(uv.x * 4.0 + time * 0.7 + index);
+                float wave2 = cos(uv.y * 4.0 + time * 0.5);
+                pos.z += wave1 * wave2 * 0.4;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+             }
+          `,
+          fragmentShader: `
+             uniform float time;
+             uniform float index;
+             uniform float colorScheme;
+             varying vec2 vUv;
+             varying float vIndex;
+             float grid(vec2 uv, float thickness) {
+                vec2 grid = abs(fract(uv - 0.5) - 0.5) / thickness;
+                float line = min(grid.x, grid.y);
+                return 1.0 - min(line, 1.0);
+             }
+             void main(){
+               float stripes = abs(sin(vUv.y * 10.0 + time * 0.5 + vIndex));
+               float pattern = abs(sin(vUv.x * 6.0 - time * 0.3 + vIndex * 0.5)) * stripes;
+               float gridPattern = grid(vUv * 6.0, 0.05);
+               vec3 darkColor, brightColor;
+               if (colorScheme < 0.5) {
+                 darkColor = vec3(0.0, 0.1, 0.3);
+                 brightColor = vec3(0.1, 0.4, 1.0);
+               } else if (colorScheme < 1.5) {
+                 darkColor = vec3(0.0, 0.15, 0.2);
+                 brightColor = vec3(0.0, 0.8, 1.0);
+               } else {
+                 darkColor = vec3(0.0, 0.2, 0.15);
+                 brightColor = vec3(0.0, 0.8, 0.8);
+               }
+               vec3 col = mix(darkColor, brightColor, pattern);
+               col = mix(col, brightColor * 1.2, gridPattern * 0.3);
+               float edge = smoothstep(0.7, 1.0, max(abs(vUv.x - 0.5), abs(vUv.y - 0.5)) * 2.0);
+               col = mix(col, brightColor, edge * 0.7);
+               float pulse = 0.85 + 0.15 * sin(time * 1.2 + vIndex * 0.5);
+               col *= pulse;
+               float radial = length(vUv - 0.5) * 2.0;
+               float radialPattern = smoothstep(0.8, 1.0, radial);
+               col = mix(col, brightColor * 1.2, radialPattern * 0.5);
+               gl_FragColor = vec4(col, 0.95);
+             }
+          `,
+          side: THREE.DoubleSide,
+          transparent: true
+        });
+        
+        const plane = new THREE.Mesh(planeGeo, planeMat);
+        const angleSpacing = (Math.PI * 2) / layer.planeCount;
+        const baseAngle = angleSpacing * i;
+        const angleOffset = (Math.random() - 0.5) * angleSpacing * 0.3;
+        const initialAngle = baseAngle + angleOffset;
+        const radiusVariation = Math.random() * 0.4 - 0.2;
+        const initialRadius = layer.radius + radiusVariation;
+        const heightScale = layer.heightRange[0] + Math.random() * (layer.heightRange[1] - layer.heightRange[0]);
+        const initialHeight = Math.sin(initialAngle * 2) * heightScale;
+        plane.position.x = initialRadius * Math.cos(initialAngle);
+        plane.position.z = initialRadius * Math.sin(initialAngle);
+        plane.position.y = initialHeight;
+        const tiltMatrix = new THREE.Matrix4().makeRotationX(layer.verticalTilt);
+        plane.position.applyMatrix4(tiltMatrix);
+        plane.lookAt(0, 0, 0);
+        plane.rotation.z = (Math.random() - 0.5) * 0.3;
+        const speed = layer.speedRange[0] + Math.random() * (layer.speedRange[1] - layer.speedRange[0]);
+        orbitingPlanes.push({
+          mesh: plane,
+          orbitalLayer: layer,
+          initialAngle: initialAngle,
+          angle: initialAngle,
+          radius: initialRadius,
+          height: initialHeight,
+          speed: speed,
+          tiltMatrix: tiltMatrix
+        });
+        scene.add(plane);
+        
+        const planeRingGeo = new THREE.TorusGeometry(2.2, 0.08, 16, 48);
+        let ringBaseColor, ringBrightColor;
+        if (layer.colorScheme === "blue") {
+          ringBaseColor = new THREE.Vector3(0.0, 0.2, 0.8);
+          ringBrightColor = new THREE.Vector3(0.4, 0.6, 1.0);
+        } else if (layer.colorScheme === "cyan") {
+          ringBaseColor = new THREE.Vector3(0.0, 0.6, 0.8);
+          ringBrightColor = new THREE.Vector3(0.4, 0.9, 1.0);
+        } else {
+          ringBaseColor = new THREE.Vector3(0.0, 0.6, 0.6);
+          ringBrightColor = new THREE.Vector3(0.3, 1.0, 0.9);
+        }
+        const planeRingMat = new THREE.ShaderMaterial({
+          uniforms: {
+            time: { value: 0 },
+            baseColor: { value: ringBaseColor },
+            brightColor: { value: ringBrightColor },
+            index: { value: planeIndex }
+          },
+          vertexShader: `
+            uniform float time;
+            uniform float index;
+            varying vec2 vUv;
+            void main() {
+              vUv = uv;
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+          `,
+          fragmentShader: `
+            uniform float time;
+            uniform float index;
+            uniform vec3 baseColor;
+            uniform vec3 brightColor;
+            varying vec2 vUv;
+            void main() {
+              float flow = fract(vUv.x * 3.0 - time * 0.7 - index * 0.1);
+              flow = smoothstep(0.0, 0.1, flow) * smoothstep(1.0, 0.7, flow);
+              float pulse = 0.7 + 0.3 * sin(time * 1.5 + index * 2.0);
+              vec3 color = mix(baseColor, brightColor, flow) * pulse;
+              float alpha = 0.4 + 0.6 * flow * pulse;
+              gl_FragColor = vec4(color, alpha);
+            }
+          `,
+          transparent: true,
+          blending: THREE.AdditiveBlending,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        });
+        const planeRing = new THREE.Mesh(planeRingGeo, planeRingMat);
+        const ringContainer = new THREE.Group();
+        ringContainer.add(planeRing);
+        scene.add(ringContainer);
+        planeRings.push({
+          mesh: ringContainer,
+          planeMesh: plane,
+          index: planeIndex
+        });
+        planeIndex++;
+      }
+    });
+    
+    const particleCount = 2000;
+    const particleGeo = new THREE.BufferGeometry();
+    const particlePositions = new Float32Array(particleCount * 3);
+    const particleSizes = new Float32Array(particleCount);
+    const particleColors = new Float32Array(particleCount * 3);
+    const particleTwinkleSpeed = new Float32Array(particleCount);
+    
+    for (let i = 0; i < particleCount; i++){
+       const radius = 40 + Math.random() * 110;
+       const theta = Math.random() * Math.PI * 2;
+       const phi = Math.acos(2 * Math.random() - 1);
+       particlePositions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+       particlePositions[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+       particlePositions[i * 3 + 2] = radius * Math.cos(phi);
+       const dist = Math.sqrt(
+         particlePositions[i * 3] * particlePositions[i * 3] +
+         particlePositions[i * 3 + 1] * particlePositions[i * 3 + 1] +
+         particlePositions[i * 3 + 2] * particlePositions[i * 3 + 2]
+       );
+       particleSizes[i] = Math.max(0.2, 1.2 - dist / 100) * 0.6;
+       const colorVar = Math.random();
+       if (colorVar > 0.92) {
+         particleColors[i * 3] = 0.6;
+         particleColors[i * 3 + 1] = 0.8;
+         particleColors[i * 3 + 2] = 1.0;
+       } else if (colorVar > 0.85) {
+         particleColors[i * 3] = 0.8;
+         particleColors[i * 3 + 1] = 0.6;
+         particleColors[i * 3 + 2] = 1.0;
+       } else if (colorVar > 0.75) {
+         particleColors[i * 3] = 0.6;
+         particleColors[i * 3 + 1] = 1.0;
+         particleColors[i * 3 + 2] = 1.0;
+       } else {
+         particleColors[i * 3] = 0.9;
+         particleColors[i * 3 + 1] = 0.95;
+         particleColors[i * 3 + 2] = 1.0;
+       }
+       particleTwinkleSpeed[i] = 0.5 + Math.random() * 1.5;
+    }
+    
+    particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+    particleGeo.setAttribute('size', new THREE.BufferAttribute(particleSizes, 1));
+    particleGeo.setAttribute('color', new THREE.BufferAttribute(particleColors, 3));
+    particleGeo.setAttribute('twinkleSpeed', new THREE.BufferAttribute(particleTwinkleSpeed, 1));
+    
+    const particleMat = new THREE.ShaderMaterial({
+      uniforms: {
+        time: { value: 0 }
+      },
+      vertexShader: `
+        attribute float size;
+        attribute vec3 color;
+        attribute float twinkleSpeed;
+        varying vec3 vColor;
+        uniform float time;
+        void main() {
+          vColor = color;
+          float twinkle = sin(time * twinkleSpeed + position.x * 10.0 + position.y * 5.0 + position.z * 7.5);
+          float s = size * (0.7 + 0.3 * (twinkle * 0.5 + 0.5));
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = s * (300.0 / -mvPosition.z);
+          gl_Position = projectionMatrix * mvPosition;
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vColor;
+        void main() {
+          float r = length(gl_PointCoord - vec2(0.5));
+          if (r > 0.5) discard;
+          float alpha = 1.0 - smoothstep(0.2, 0.5, r);
+          float glow = 1.0 - smoothstep(0.1, 0.5, r);
+          vec3 finalColor = vColor * (1.0 + glow * 0.2);
+          gl_FragColor = vec4(finalColor, alpha * 0.8);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+    
+    particles = new THREE.Points(particleGeo, particleMat);
+    scene.add(particles);
+    
+    composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      0.4,
+      0.4,
+      0.25
+    );
+    composer.addPass(bloomPass);
+    
+    const vignetteShader = {
+      uniforms: {
+         tDiffuse: { value: null },
+         offset: { value: 1.0 },
+         darkness: { value: 1.2 }
+      },
+      vertexShader: `
+         varying vec2 vUv;
+         void main(){
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+         }
+      `,
+      fragmentShader: `
+         uniform sampler2D tDiffuse;
+         uniform float offset;
+         uniform float darkness;
+         varying vec2 vUv;
+         void main(){
+            vec4 texel = texture2D(tDiffuse, vUv);
+            vec2 uv = (vUv - vec2(0.5)) * vec2(offset);
+            float vig = 1.0 - dot(uv, uv) * darkness;
+            vig = smoothstep(0.0, 1.0, vig);
+            gl_FragColor = vec4(texel.rgb * vig, texel.a);
+         }
+      `
+    };
+    const vignettePass = new ShaderPass(vignetteShader);
+    composer.addPass(vignettePass);
+    composer.addPass(new OutputPass());
+    
+    window.addEventListener('resize', onWindowResize, false);
+  }
+  
+  function animate() {
+    requestAnimationFrame(animate);
+    const t = clock.getElapsedTime();
+    centralIcosahedron.material.uniforms.time.value = t;
+    centralIcosahedron.rotation.y = t * 0.1;
+    centralIcosahedron.rotation.x = Math.sin(t * 0.05) * 0.1;
+    centralRing.material.uniforms.time.value = t;
+    centralRing.rotation.z = t * 0.2;
+    if (centralRing.children[0]) {
+      centralRing.children[0].material.uniforms.time.value = t;
+    }
+    
+    energyRings.forEach((ring, i) => {
+      ring.mesh.material.uniforms.time.value = t;
+      ring.mesh.rotation.z = t * ring.speed * (i % 2 === 0 ? 1 : -1);
+      ring.mesh.position.y = -5 - i * 0.5 + Math.sin(t * 0.5 + i) * 0.3;
+    });
+
+    orbitingPlanes.forEach((planeObj, i) => {
+      planeObj.mesh.material.uniforms.time.value = t;
+      planeObj.angle += 0.002 * planeObj.speed * (1.0 + 0.1 * Math.sin(planeObj.angle * 2));
+      const baseX = planeObj.radius * Math.cos(planeObj.angle);
+      const baseZ = planeObj.radius * Math.sin(planeObj.angle);
+      const heightFactor = Math.sin(planeObj.angle * 2 + planeObj.initialAngle * 3);
+      const newHeight = planeObj.height * heightFactor;
+      let newPosition = new THREE.Vector3(baseX, newHeight, baseZ);
+      newPosition.applyMatrix4(planeObj.tiltMatrix);
+      planeObj.mesh.position.copy(newPosition);
+      planeObj.mesh.lookAt(0, 0, 0);
+      planeObj.mesh.rotation.z = Math.sin(t * 0.2 + i) * 0.1 + Math.sin(i) * 0.2;
+    });
+    planeRings.forEach((ringObj, i) => {
+      const plane = ringObj.planeMesh;
+      ringObj.mesh.position.copy(plane.position);
+      ringObj.mesh.rotation.copy(plane.rotation);
+      ringObj.mesh.children[0].material.uniforms.time.value = t;
+      ringObj.mesh.children[0].rotation.z = t * 0.3 + ringObj.index * 0.2;
+    });
+    if (particles.material.uniforms) {
+      particles.material.uniforms.time.value = t;
+    }
+    particles.rotation.y = t * 0.01;
+    particles.rotation.x = Math.sin(t * 0.005) * 0.02;
+    controls.update();
+    composer.render();
+  }
+  
+  function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    composer.setSize(window.innerWidth, window.innerHeight);
+  }
+</script>
+    <script  src="./script.js"></script>
+
+  </body>
+  
+</html>
